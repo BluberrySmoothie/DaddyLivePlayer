@@ -1,4 +1,4 @@
-# daddylive_gui.py - COMPLETE FIXED VERSION
+# daddylive_gui.py - THREAD-SAFE FIXED VERSION
 
 import sys
 import re
@@ -7,7 +7,7 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QTabWidget, QVBoxLayout, QHBoxLayout,
     QComboBox, QPushButton, QLabel, QMessageBox, QSizePolicy, QSpacerItem, QCompleter
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QSize
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QSize, pyqtSlot
 
 # Import the logic modules
 from data_retriever import DataRetriever
@@ -37,6 +37,10 @@ class DataWorker(QThread):
             self.error.emit(f"An unexpected error occurred: {e}")
 
 class MainWindow(QMainWindow):
+    # Define signals for thread-safe GUI updates
+    playback_error_signal = pyqtSignal(str)
+    playback_stopped_signal = pyqtSignal()
+    
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Daddy Live Stream Player")
@@ -49,6 +53,10 @@ class MainWindow(QMainWindow):
         
         # Flag to track if stop was user-initiated
         self.user_stopped = False
+
+        # Connect signals to slots
+        self.playback_error_signal.connect(self.show_playback_error)
+        self.playback_stopped_signal.connect(self.handle_playback_stopped)
 
         self.tab_widget = QTabWidget()
         self.setCentralWidget(self.tab_widget)
@@ -207,13 +215,13 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(tab)
         
         about_text = QLabel(
-            "<h1>Daddy Live Player V1.0</h1>"
+            "<h1>Daddy Live Player V2.0</h1>"
             "<p>A desktop client for accessing Daddy Live streaming resources. "
             "This application provides an intuitive interface for browsing live channels "
             "and scheduled sporting events.</p>"
             
             "<h2>System Requirements</h2>"
-            "<p><b>Required:</b> FFplay (part of FFmpeg) must be installed and available in your system PATH.</p>"
+            "<p><b>Required:</b> MPV must be installed and available in your system PATH.</p>"
             
             "<h2>Features</h2>"
             "<ul>"
@@ -228,7 +236,7 @@ class MainWindow(QMainWindow):
             "<a href='https://github.com/BluberrySmoothie'>github.com/BluberrySmoothie</a></p>"
             
             "<h2>Technologies</h2>"
-            "<p>Built with PyQt6, Selenium, and FFmpeg</p>"
+            "<p>Built with PyQt6, Streamlink, selenium and MPV player</p>"
         )
         
         about_text.setOpenExternalLinks(True)
@@ -302,47 +310,45 @@ class MainWindow(QMainWindow):
             self.current_stream_player = StreamPlayer(
                 channel_id=channel_id,
                 start_callback=lambda: self.playback_started(stream_name),
-                stop_callback=self.playback_stopped,
-                error_callback=self.playback_error
+                stop_callback=lambda: self.playback_stopped_signal.emit(),
+                error_callback=lambda msg: self.playback_error_signal.emit(msg)
             )
             self.current_stream_player.start()
             self.update_ui_for_playback_state(True, stream_name)
         except Exception as e:
-            self.playback_error(f"Failed to launch playback thread: {e}")
+            QMessageBox.critical(self, "Launch Error", f"Failed to launch playback thread: {e}")
 
     def playback_started(self, stream_name):
-        """Callback when the StreamPlayer successfully launches ffplay."""
+        """Callback when the StreamPlayer successfully launches."""
         pass
 
-    def playback_stopped(self):
-        """Callback when the StreamPlayer thread terminates normally."""
+    @pyqtSlot()
+    def handle_playback_stopped(self):
+        """Slot to handle playback stopped in main thread."""
         self.current_stream_player = None
         self.update_ui_for_playback_state(False)
         
         # Only show message if user didn't manually stop it
         if not self.user_stopped:
-            # Use QTimer to show message in the main thread
-            from PyQt6.QtCore import QTimer
-            QTimer.singleShot(100, self.show_stream_ended_message)
-    
-    def show_stream_ended_message(self):
-        """Show the stream ended message - called from main thread."""
-        QMessageBox.information(
-            self,
-            "Stream Ended",
-            "Stream has been terminated.\n\n"
-            "Possible reasons:\n"
-            "• You closed the ffplay window\n"
-            "• Stream went offline/unavailable\n"
-            "• Network connection issue"
-        )
+            QMessageBox.information(
+                self,
+                "Stream Ended",
+                "Stream has been terminated.\n\n"
+                "Possible reasons:\n"
+                "• You closed the player window\n"
+                "• Stream went offline/unavailable\n"
+                "• You need to try using a VPN\n"
+                "• Network connection issue"
+            )
 
-    def playback_error(self, message):
-        """Callback when the StreamPlayer thread encounters an error."""
+    @pyqtSlot(str)
+    def show_playback_error(self, message):
+        """Slot to show playback error in main thread."""
         QMessageBox.critical(
             self, 
             "Playback Failed", 
-            f"Failed to play stream. Ensure FFplay is installed and in your PATH, and all required Python packages are installed.\n\nDetails: {message}"
+            f"Failed to play stream. Ensure all required Python packages are installed.\n\n"
+            f"Details: {message}"
         )
         self.current_stream_player = None
         self.update_ui_for_playback_state(False)
@@ -363,7 +369,7 @@ class MainWindow(QMainWindow):
             self.events_play_btn.setText("🔴 STOP Stream")
             self.channels_play_btn.clicked.connect(self.stop_current_stream)
             self.events_play_btn.clicked.connect(self.stop_current_stream)
-            self.statusBar().showMessage(f"Streaming: {stream_name} | Close ffplay window or click STOP")
+            self.statusBar().showMessage(f"Streaming: {stream_name} | Close player window or click STOP")
         else:
             self.channels_play_btn.setText("▶️ Play Channel")
             self.events_play_btn.setText("▶️ Play Event")
@@ -377,7 +383,7 @@ class MainWindow(QMainWindow):
             self.user_stopped = True
             self.current_stream_player.stop() 
             self.current_stream_player.join(timeout=3)
-        self.playback_stopped()
+        self.handle_playback_stopped()
 
     def closeEvent(self, event):
         """Ensures the stream is stopped before closing the application."""

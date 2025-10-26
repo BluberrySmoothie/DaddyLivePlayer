@@ -1,4 +1,4 @@
-# stream_player.py - Fixed buffering issue
+# stream_player.py (FIXED Streamlink Version)
 
 import subprocess
 import threading
@@ -8,7 +8,7 @@ import time
 
 class StreamPlayer(threading.Thread):
     """
-    Manages the stream playback in a separate thread by calling PlayTest-headless.py
+    Manages stream playback in a separate thread by calling PlayTest-streamlink.py
     """
 
     def __init__(self, channel_id, start_callback=None, stop_callback=None, error_callback=None):
@@ -28,85 +28,93 @@ class StreamPlayer(threading.Thread):
         self.error_callback = error_callback
 
     def stop(self):
-        """Stops the playback process."""
+        """Stops the playback process (Streamlink and associated player)."""
         self._stop_event.set()
         
-        # Terminate the subprocess
         if self.process and self.process.poll() is None:
             try:
+                # Try graceful termination first
                 self.process.terminate()
                 self.process.wait(timeout=3)
-            except Exception:
+            except subprocess.TimeoutExpired:
+                # Force kill if it doesn't terminate
                 try:
                     self.process.kill()
+                    self.process.wait(timeout=2)
                 except Exception:
                     pass
+            except Exception:
+                pass
 
     def run(self):
         """The main execution loop for the thread."""
+        error_occurred = False
+        error_message = ""
         
         try:
-            # Find the path to PlayTest-headless.py (should be in same directory)
             script_dir = os.path.dirname(os.path.abspath(__file__))
-            playtest_script = os.path.join(script_dir, "PlayTest-headless.py")
+            player_script = os.path.join(script_dir, 'PlayTest-streamlink.py')
             
-            # Check if the script exists
-            if not os.path.exists(playtest_script):
-                if self.error_callback:
-                    self.error_callback(f"PlayTest-headless.py not found at: {playtest_script}")
+            # Verify script exists
+            if not os.path.exists(player_script):
+                error_occurred = True
+                error_message = f"Script not found: {player_script}"
                 return
-            
-            # Build the command to run PlayTest-headless.py with the channel ID
-            cmd = [sys.executable, playtest_script, str(self.channel_id)]
-            
-            # Start the subprocess with all output suppressed
-            # Use DEVNULL for stdin, stdout, and stderr
-            # On Windows, use CREATE_NO_WINDOW flag to hide console window
-            startupinfo = None
-            if sys.platform == 'win32':
-                startupinfo = subprocess.STARTUPINFO()
-                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-                startupinfo.wShowWindow = subprocess.SW_HIDE
-            
+
+            cmd = [sys.executable, player_script, str(self.channel_id), '--silent']
+
+            # Launch the process
             self.process = subprocess.Popen(
                 cmd,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 stdin=subprocess.DEVNULL,
-                startupinfo=startupinfo
+                universal_newlines=True,
+                bufsize=1,
+                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == 'win32' else 0
             )
-            
+
             # Give it a moment to start
-            time.sleep(0.5)
+            time.sleep(2)
             
             # Check if it failed immediately
-            initial_check = self.process.poll()
-            if initial_check is not None and initial_check != 0:
-                if self.error_callback:
-                    self.error_callback(
-                        f"Failed to start stream for channel {self.channel_id}.\n\n"
-                        f"The stream may be unavailable or offline.\n"
-                        f"Try a different channel."
-                    )
+            if self.process.poll() is not None:
+                stdout_out, stderr_out = self.process.communicate()
+                error_msg = stderr_out.strip() if stderr_out else stdout_out.strip()
+                
+                error_occurred = True
+                error_message = (
+                    f"Streamlink failed to start (exit code {self.process.returncode})\n\n"
+                    f"Make sure Streamlink is installed:\n"
+                    f"  pip install streamlink\n\n"
+                    f"Details: {error_msg[:300] if error_msg else 'No output'}"
+                )
                 return
             
-            # Signal successful start
+            # Notify that playback started successfully
             if self.start_callback:
                 self.start_callback()
             
-            # Monitor the process - just wait for it to complete
+            # Monitor the process
             while not self._stop_event.is_set():
                 returncode = self.process.poll()
                 if returncode is not None:
-                    # Process ended naturally (user closed ffplay window)
+                    # Process ended
                     break
                 time.sleep(0.5)
             
+        except FileNotFoundError:
+            error_occurred = True
+            error_message = "Python interpreter not found. This shouldn't happen!"
         except Exception as e:
-            if self.error_callback:
-                self.error_callback(f"Playback error: {e}")
+            error_occurred = True
+            error_message = f"Playback error: {e}"
         finally:
             self.cleanup()
+            
+            # Call callbacks after cleanup
+            if error_occurred and self.error_callback:
+                self.error_callback(error_message)
             if self.stop_callback:
                 self.stop_callback()
 
