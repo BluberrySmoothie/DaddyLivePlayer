@@ -6,6 +6,10 @@ A desktop application for accessing Daddy Live streaming resources with an intui
 ![Platform](https://img.shields.io/badge/platform-Windows-lightgrey.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 
+## Support the Project
+If you like my work, feel free to buy me a coffee! ☕
+https://buymeacoffee.com/BluberrySmoothie
+
 ## Features
 
 - 🎯 **Browse Live Channels** - Access hundreds of live sports channels
